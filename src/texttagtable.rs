@@ -120,7 +120,19 @@ impl TextTagTable {
         tag_search.set_background_rgba(Some(&highlight));
 
         let _tag_rule = TextTagTable::create_tag(Tag::RULE, &table);
+        // margin tag - applied to whole line
+        let tag_list_ul = TextTagTable::create_tag(Tag::LIST_UL, &table);
+        tag_list_ul.set_left_margin(32); // was 16
+        let tag_list_ol = TextTagTable::create_tag(Tag::LIST_OL, &table);
+        tag_list_ol.set_left_margin(32);
 
+        // color tag - applied to prefix chars only
+        let tag_list_ul_prefix = TextTagTable::create_tag(Tag::LIST_UL_PREFIX, &table);
+        let muted = gdk::RGBA { red: 0.5f32, green: 0.5f32, blue: 0.5f32, alpha: 1.0f32 };
+        tag_list_ul_prefix.set_foreground_rgba(Some(&muted));
+
+        let tag_list_ol_prefix = TextTagTable::create_tag(Tag::LIST_OL_PREFIX, &table);
+        tag_list_ol_prefix.set_foreground_rgba(Some(&muted));
         Self { table }
     }
 

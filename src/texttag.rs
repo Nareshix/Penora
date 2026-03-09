@@ -30,6 +30,10 @@ pub enum ParFormat {
 
 pub struct Tag {}
 impl Tag {
+    pub const LIST_UL: &'static str = "list_ul";
+    pub const LIST_OL: &'static str = "list_ol";
+    pub const LIST_UL_PREFIX: &'static str = "list_ul_prefix";
+    pub const LIST_OL_PREFIX: &'static str = "list_ol_prefix";
     pub const H1: &'static str = "h1";
     pub const H2: &'static str = "h2";
     pub const H3: &'static str = "h3";

@@ -39,6 +39,12 @@ pub struct LinkData {
 type OpenLinkCb = Rc<RefCell<Box<dyn Fn(&str)>>>;
 type AcceptLinkCb = Rc<RefCell<Box<dyn Fn(Option<&LinkData>)>>>;
 
+fn split_indent(line: &str) -> (&str, &str) {
+    let trimmed = line.trim_start_matches(' ');
+    let indent_len = line.len() - trimmed.len();
+    (&line[..indent_len], trimmed)
+}
+
 fn blocking_get(url: &str) -> Result<reqwest::blocking::Response, reqwest::Error> {
     // ToDo: this client should not be created every time!
     let custom = reqwest::redirect::Policy::custom(|attempt| attempt.follow());
@@ -414,7 +420,6 @@ impl TextView {
             link_start,
             link_end,
             colors: Rc::new(RefCell::new(Colors::new())),
-            is_reapplying: Rc::new(RefCell::new(false)),
         };
         this.top_level.add_controller(&this.get_key_press_handler_background());
         this.textview.add_controller(&this.get_key_press_handler());
@@ -440,12 +445,7 @@ impl TextView {
         this.buffer.connect_changed({
             let this2 = this.clone();
             move |_| {
-                if *this2.is_reapplying.borrow() {
-                    return;
-                }
-                *this2.is_reapplying.borrow_mut() = true;
                 this2.reapply_list_tags();
-                *this2.is_reapplying.borrow_mut() = false;
             }
         });
         this.update_colors(false);
@@ -456,6 +456,7 @@ impl TextView {
     fn reapply_list_tags(&self) {
         let buffer = &self.buffer;
         let line_count = buffer.line_count();
+
         for line in 0..line_count {
             let line_iter = match buffer.iter_at_line(line) {
                 Some(i) => i,
@@ -481,7 +482,6 @@ impl TextView {
             };
 
             if is_ul || is_ol {
-                // === SAME AS BEFORE (apply) ===
                 let fresh_start = match buffer.iter_at_line(line) {
                     Some(i) => i,
                     None => continue,
@@ -495,7 +495,10 @@ impl TextView {
                     .tag_table()
                     .lookup(if is_ol { Tag::LIST_OL } else { Tag::LIST_UL })
                     .unwrap();
-                buffer.apply_tag(&line_tag, &fresh_start, &fresh_end);
+
+                if !fresh_start.has_tag(&line_tag) {
+                    buffer.apply_tag(&line_tag, &fresh_start, &fresh_end);
+                }
 
                 let prefix_len =
                     if is_ul { 2 } else { item_text.find(". ").map(|p| p + 2).unwrap_or(2) };
@@ -511,14 +514,19 @@ impl TextView {
                     .tag_table()
                     .lookup(if is_ol { Tag::LIST_OL_PREFIX } else { Tag::LIST_UL_PREFIX })
                     .unwrap();
-                buffer.apply_tag(&prefix_tag, &fresh_start2, &prefix_end);
+
+                if !fresh_start2.has_tag(&prefix_tag) {
+                    buffer.apply_tag(&prefix_tag, &fresh_start2, &prefix_end);
+                }
             } else {
-                // === NEW: remove tags only when the line is no longer a list ===
+                // === ONLY remove if the tags are actually present ===
                 for tag_name in
                     &[Tag::LIST_UL, Tag::LIST_OL, Tag::LIST_UL_PREFIX, Tag::LIST_OL_PREFIX]
                 {
                     if let Some(tag) = buffer.tag_table().lookup(tag_name) {
-                        buffer.remove_tag(&tag, &line_iter, &line_end);
+                        if line_iter.has_tag(&tag) {
+                            buffer.remove_tag(&tag, &line_iter, &line_end);
+                        }
                     }
                 }
             }
@@ -563,6 +571,169 @@ impl TextView {
         buffer.apply_tag(&tag, &tag_start, &tline_end);
         buffer.end_user_action();
         true
+    }
+
+    fn try_auto_list(&self) -> bool {
+        if !self.is_editable() {
+            return false;
+        }
+        let buffer = &self.buffer;
+        let cursor = buffer.get_insert_iter();
+        let mut line_start = cursor.clone();
+        line_start.set_line_offset(0);
+        let prefix = buffer.text(&line_start, &cursor, false);
+        let prefix = prefix.as_str();
+
+        let is_unordered = prefix == "-" || prefix == "*";
+        let is_ordered = {
+            let p = prefix.trim_end_matches('.');
+            !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()) && prefix.ends_with('.')
+        };
+
+        if !is_unordered && !is_ordered {
+            return false;
+        }
+
+        // save what we need before any mutation
+        let current_line = cursor.line();
+        let insert_text = if is_unordered { String::from("• ") } else { format!("{} ", prefix) };
+
+        buffer.begin_user_action();
+
+        // delete the typed prefix
+        let mut ls = buffer.iter_at_line(current_line).unwrap();
+        let mut cur = buffer.get_insert_iter();
+        buffer.delete(&mut ls, &mut cur);
+
+        // insert the new prefix
+        let mut pos = buffer.get_insert_iter();
+        let prefix_start_offset = pos.offset();
+        buffer.insert(&mut pos, &insert_text);
+
+        // re-fetch everything fresh by line number / offset
+        let line_iter = buffer.iter_at_line(current_line).unwrap();
+        let mut line_end = line_iter.clone();
+        if !line_end.ends_line() {
+            line_end.forward_to_line_end();
+        }
+
+        // margin tag on whole line
+        let line_tag = buffer
+            .tag_table()
+            .lookup(if is_ordered { Tag::LIST_OL } else { Tag::LIST_UL })
+            .unwrap();
+        buffer.apply_tag(&line_tag, &line_iter, &line_end);
+
+        // grey color on prefix only - re-fetch fresh iterators by offset
+        let prefix_start = buffer.iter_at_offset(prefix_start_offset);
+        let prefix_end = buffer.get_insert_iter();
+        let prefix_tag = buffer
+            .tag_table()
+            .lookup(if is_ordered { Tag::LIST_OL_PREFIX } else { Tag::LIST_UL_PREFIX })
+            .unwrap();
+        buffer.apply_tag(&prefix_tag, &prefix_start, &prefix_end);
+
+        buffer.end_user_action();
+        true
+    }
+    fn try_list_continue(&self) -> bool {
+        if !self.is_editable() {
+            return false;
+        }
+        let buffer = &self.buffer;
+        let cursor = buffer.get_insert_iter();
+
+        if !cursor.ends_line() {
+            return false;
+        }
+
+        let mut line_start = cursor.clone();
+        line_start.set_line_offset(0);
+        let line_text = buffer.text(&line_start, &cursor, false);
+        let line = line_text.as_str();
+
+        let (indent, item_text) = split_indent(line);
+
+        let (is_ol, next_prefix) = if item_text.starts_with("• ") {
+            (false, Some(format!("{}• ", indent)))
+        } else {
+            let dot_pos = item_text.find(". ");
+            if let Some(pos) = dot_pos {
+                let num_str = &item_text[..pos];
+                if !num_str.is_empty() && num_str.chars().all(|c| c.is_ascii_digit()) {
+                    if let Ok(n) = num_str.parse::<u64>() {
+                        (true, Some(format!("{}{}. ", indent, n + 1)))
+                    } else {
+                        (false, None)
+                    }
+                } else {
+                    (false, None)
+                }
+            } else {
+                (false, None)
+            }
+        };
+
+        if let Some(prefix) = next_prefix {
+            // empty item = exit the list
+            let content = &item_text[prefix.trim_start().len()..];
+            if content.trim().is_empty() && !item_text.trim().is_empty() {
+                buffer.begin_user_action();
+                let mut ls = line_start.clone();
+                let mut cur = cursor.clone();
+                buffer.delete(&mut ls, &mut cur);
+                buffer.end_user_action();
+                return true;
+            }
+
+            // save current line number before mutation
+            let current_line = cursor.line();
+
+            buffer.begin_user_action();
+            let mut pos = cursor.clone();
+            buffer.insert(&mut pos, &format!("\n{}", prefix));
+
+            // new line is current_line + 1 - fetch everything fresh by line number
+            let new_line = current_line + 1;
+            let new_bol = match buffer.iter_at_line(new_line) {
+                Some(i) => i,
+                None => {
+                    buffer.end_user_action();
+                    return true;
+                }
+            };
+            let mut new_eol = new_bol.clone();
+            if !new_eol.ends_line() {
+                new_eol.forward_to_line_end();
+            }
+
+            // margin tag on whole new line
+            let line_tag =
+                buffer.tag_table().lookup(if is_ol { Tag::LIST_OL } else { Tag::LIST_UL }).unwrap();
+            buffer.apply_tag(&line_tag, &new_bol, &new_eol);
+
+            // grey color on prefix only - fresh iterators again
+            let new_bol2 = match buffer.iter_at_line(new_line) {
+                Some(i) => i,
+                None => {
+                    buffer.end_user_action();
+                    return true;
+                }
+            };
+            let mut prefix_end = new_bol2.clone();
+            prefix_end.forward_chars(prefix.chars().count() as i32);
+            let prefix_tag = buffer
+                .tag_table()
+                .lookup(if is_ol { Tag::LIST_OL_PREFIX } else { Tag::LIST_UL_PREFIX })
+                .unwrap();
+            buffer.apply_tag(&prefix_tag, &new_bol2, &prefix_end);
+
+            buffer.end_user_action();
+            self.tags.text_edit(TextEdit::NewLine);
+            return true;
+        }
+
+        false
     }
     fn paste_image(&self) -> bool {
         let clipboard = self.textview.clipboard();
@@ -644,7 +815,7 @@ impl TextView {
     }
 
     fn buffer_do_insert_text(&self, values: &[Value]) -> Option<Value> {
-        let buffer = &values[0].get::<gtk::TextBuffer>().unwrap();
+        let buffer = &self.buffer;
         let iter = &values[1].get::<gtk::TextIter>().unwrap();
         let _text = values[2].get::<&str>().unwrap();
         let count = values[3].get::<i32>().unwrap();
@@ -728,11 +899,17 @@ impl TextView {
                         keys::F8 => this.turnaround(),
                         keys::Tab | keys::ISO_Left_Tab => this.insert_tab(),
                         keys::KP_Enter | keys::Return => {
+                            if this.try_list_continue() {
+                                return Inhibit(true);
+                            }
                             this.tags.text_edit(TextEdit::NewLine);
                             return Inhibit(false);
                         }
                         keys::space => {
                             if this.try_auto_heading() {
+                                return Inhibit(true);
+                            }
+                            if this.try_auto_list() {
                                 return Inhibit(true);
                             }
                             return Inhibit(false);
