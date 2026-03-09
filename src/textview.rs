@@ -372,6 +372,8 @@ pub struct TextView {
     link_start: gtk::TextMark,
     link_end: gtk::TextMark,
     colors: Rc<RefCell<Colors>>,
+    is_renumbering: Rc<RefCell<bool>>,
+
 }
 
 impl TextView {
@@ -420,6 +422,8 @@ impl TextView {
             link_start,
             link_end,
             colors: Rc::new(RefCell::new(Colors::new())),
+            is_renumbering: Rc::new(RefCell::new(false)),
+
         };
         this.top_level.add_controller(&this.get_key_press_handler_background());
         this.textview.add_controller(&this.get_key_press_handler());
@@ -453,85 +457,155 @@ impl TextView {
         this
     }
 
-    fn reapply_list_tags(&self) {
-        let buffer = &self.buffer;
-        let line_count = buffer.line_count();
+fn reapply_list_tags(&self) {
+    if *self.is_renumbering.borrow() {
+        return;
+    }
 
-        for line in 0..line_count {
-            let line_iter = match buffer.iter_at_line(line) {
+    let buffer = &self.buffer;
+    let line_count = buffer.line_count();
+    let mut ol_counter: u64 = 0;
+    let mut in_ol = false;
+
+    for line in 0..line_count {
+        let line_iter = match buffer.iter_at_line(line) {
+            Some(i) => i,
+            None => continue,
+        };
+        let mut line_end = line_iter.clone();
+        if !line_end.ends_line() {
+            line_end.forward_to_line_end();
+        }
+
+        let line_text = buffer.text(&line_iter, &line_end, false);
+        let (indent, item_text) = split_indent(line_text.as_str());
+
+        let is_ul = item_text.starts_with("• ");
+        let is_ol = !is_ul && {
+            let dot_pos = item_text.find(". ");
+            dot_pos
+                .map(|p| {
+                    let num = &item_text[..p];
+                    !num.is_empty() && num.chars().all(|c| c.is_ascii_digit())
+                })
+                .unwrap_or(false)
+        };
+
+        if is_ul {
+            in_ol = false;
+            ol_counter = 0;
+
+            let fresh_start = match buffer.iter_at_line(line) {
                 Some(i) => i,
                 None => continue,
             };
-            let mut line_end = line_iter.clone();
-            if !line_end.ends_line() {
-                line_end.forward_to_line_end();
+            let mut fresh_end = fresh_start.clone();
+            if !fresh_end.ends_line() {
+                fresh_end.forward_to_line_end();
             }
 
-            let line_text = buffer.text(&line_iter, &line_end, false);
-            let (_, item_text) = split_indent(line_text.as_str());
+            let line_tag = buffer.tag_table().lookup(Tag::LIST_UL).unwrap();
+            if !fresh_start.has_tag(&line_tag) {
+                buffer.apply_tag(&line_tag, &fresh_start, &fresh_end);
+            }
 
-            let is_ul = item_text.starts_with("• ");
-            let is_ol = !is_ul && {
-                let dot_pos = item_text.find(". ");
-                dot_pos
-                    .map(|p| {
-                        let num = &item_text[..p];
-                        !num.is_empty() && num.chars().all(|c| c.is_ascii_digit())
-                    })
-                    .unwrap_or(false)
+            let fresh_start2 = match buffer.iter_at_line(line) {
+                Some(i) => i,
+                None => continue,
+            };
+            let mut prefix_end = fresh_start2.clone();
+            prefix_end.forward_chars(2);
+
+            let prefix_tag = buffer.tag_table().lookup(Tag::LIST_UL_PREFIX).unwrap();
+            if !fresh_start2.has_tag(&prefix_tag) {
+                buffer.apply_tag(&prefix_tag, &fresh_start2, &prefix_end);
+            }
+        } else if is_ol {
+            let dot_pos = item_text.find(". ").unwrap();
+            let current_num: u64 = item_text[..dot_pos].parse().unwrap_or(0);
+
+            if !in_ol {
+                ol_counter = 1;
+                in_ol = true;
+            } else {
+                ol_counter += 1;
+            }
+
+            if current_num != ol_counter {
+                let old_prefix = format!("{}{}. ", indent, current_num);
+                let correct_prefix = format!("{}{}. ", indent, ol_counter);
+
+                let mut prefix_end = match buffer.iter_at_line(line) {
+                    Some(i) => i,
+                    None => continue,
+                };
+                prefix_end.forward_chars(old_prefix.chars().count() as i32);
+                let mut ls = match buffer.iter_at_line(line) {
+                    Some(i) => i,
+                    None => continue,
+                };
+
+                *self.is_renumbering.borrow_mut() = true;
+                buffer.delete(&mut ls, &mut prefix_end);
+                let mut ins = buffer.iter_at_line(line).unwrap();
+                buffer.insert(&mut ins, &correct_prefix);
+                *self.is_renumbering.borrow_mut() = false;
+            }
+
+            let fresh_start = match buffer.iter_at_line(line) {
+                Some(i) => i,
+                None => continue,
+            };
+            let mut fresh_end = fresh_start.clone();
+            if !fresh_end.ends_line() {
+                fresh_end.forward_to_line_end();
+            }
+
+            let line_tag = buffer.tag_table().lookup(Tag::LIST_OL).unwrap();
+            if !fresh_start.has_tag(&line_tag) {
+                buffer.apply_tag(&line_tag, &fresh_start, &fresh_end);
+            }
+
+            let fresh_start2 = match buffer.iter_at_line(line) {
+                Some(i) => i,
+                None => continue,
             };
 
-            if is_ul || is_ol {
-                let fresh_start = match buffer.iter_at_line(line) {
-                    Some(i) => i,
-                    None => continue,
-                };
-                let mut fresh_end = fresh_start.clone();
-                if !fresh_end.ends_line() {
-                    fresh_end.forward_to_line_end();
+            let current_text = {
+                let mut end = fresh_start2.clone();
+                if !end.ends_line() {
+                    end.forward_to_line_end();
                 }
+                buffer.text(&fresh_start2, &end, false)
+            };
+            let (_, refreshed_item) = split_indent(current_text.as_str());
+            let prefix_len = refreshed_item.find(". ").map(|p| p + 2).unwrap_or(2);
 
-                let line_tag = buffer
-                    .tag_table()
-                    .lookup(if is_ol { Tag::LIST_OL } else { Tag::LIST_UL })
-                    .unwrap();
+            let fresh_start3 = match buffer.iter_at_line(line) {
+                Some(i) => i,
+                None => continue,
+            };
+            let mut prefix_end2 = fresh_start3.clone();
+            prefix_end2.forward_chars((indent.len() + prefix_len) as i32);
 
-                if !fresh_start.has_tag(&line_tag) {
-                    buffer.apply_tag(&line_tag, &fresh_start, &fresh_end);
-                }
+            let prefix_tag = buffer.tag_table().lookup(Tag::LIST_OL_PREFIX).unwrap();
+            if !fresh_start3.has_tag(&prefix_tag) {
+                buffer.apply_tag(&prefix_tag, &fresh_start3, &prefix_end2);
+            }
+        } else {
+            in_ol = false;
+            ol_counter = 0;
 
-                let prefix_len =
-                    if is_ul { 2 } else { item_text.find(". ").map(|p| p + 2).unwrap_or(2) };
-
-                let fresh_start2 = match buffer.iter_at_line(line) {
-                    Some(i) => i,
-                    None => continue,
-                };
-                let mut prefix_end = fresh_start2.clone();
-                prefix_end.forward_chars(prefix_len as i32);
-
-                let prefix_tag = buffer
-                    .tag_table()
-                    .lookup(if is_ol { Tag::LIST_OL_PREFIX } else { Tag::LIST_UL_PREFIX })
-                    .unwrap();
-
-                if !fresh_start2.has_tag(&prefix_tag) {
-                    buffer.apply_tag(&prefix_tag, &fresh_start2, &prefix_end);
-                }
-            } else {
-                // === ONLY remove if the tags are actually present ===
-                for tag_name in
-                    &[Tag::LIST_UL, Tag::LIST_OL, Tag::LIST_UL_PREFIX, Tag::LIST_OL_PREFIX]
-                {
-                    if let Some(tag) = buffer.tag_table().lookup(tag_name) {
-                        if line_iter.has_tag(&tag) {
-                            buffer.remove_tag(&tag, &line_iter, &line_end);
-                        }
+            for tag_name in &[Tag::LIST_UL, Tag::LIST_OL, Tag::LIST_UL_PREFIX, Tag::LIST_OL_PREFIX] {
+                if let Some(tag) = buffer.tag_table().lookup(tag_name) {
+                    if line_iter.has_tag(&tag) {
+                        buffer.remove_tag(&tag, &line_iter, &line_end);
                     }
                 }
             }
         }
     }
+}
     fn try_auto_heading(&self) -> bool {
         if !self.is_editable() {
             return false;
