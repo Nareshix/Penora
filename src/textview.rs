@@ -369,6 +369,161 @@ pub struct TextView {
 }
 
 impl TextView {
+    pub fn new() -> Self {
+        let ui_src = include_str!("textview.ui");
+        let b = gtk::Builder::new();
+        b.add_from_string(ui_src).expect("Couldn't add from string");
+
+        let tags = Rc::new(TextTagManager::new());
+        let buffer = gtk::TextBuffer::new(Some(tags.table()));
+
+        let textview: gtk::TextView = builder_get!(b("textview"));
+        textview.set_top_margin(MARGIN);
+        textview.set_bottom_margin(MARGIN);
+        textview.set_left_margin(MARGIN);
+        textview.set_right_margin(MARGIN);
+        textview.set_wrap_mode(gtk::WrapMode::Word);
+        textview.set_pixels_above_lines(2);
+        textview.set_pixels_below_lines(2);
+        textview.set_pixels_inside_wrap(1);
+        textview.set_has_tooltip(true);
+
+        let link_edit = Rc::new(LinkEdit::new(&b));
+        let search_bar = Rc::new(SearchBar::new(&b, {
+            let t = textview.clone();
+            move || -> gtk::TextView { t.clone() }
+        }));
+
+        let b: gtk::Box = builder_get!(b("container"));
+        let top_level = b.upcast::<gtk::Widget>();
+
+        let activate_link_cb: OpenLinkCb = Rc::new(RefCell::new(Box::new(|_: &str| {})));
+
+        let link_start = buffer.create_mark(None, &buffer.start_iter(), true);
+        let link_end = buffer.create_mark(None, &buffer.start_iter(), false);
+
+        let this = Self {
+            buffer,
+            tags,
+            textview,
+            link_edit,
+            search_bar,
+            top_level,
+            activate_link_cb,
+            is_editable: Rc::new(RefCell::from(true)),
+            link_start,
+            link_end,
+            colors: Rc::new(RefCell::new(Colors::new())),
+            is_reapplying: Rc::new(RefCell::new(false)),
+        };
+        this.top_level.add_controller(&this.get_key_press_handler_background());
+        this.textview.add_controller(&this.get_key_press_handler());
+        this.textview.add_controller(&this.get_mouse_release_handler());
+        this.textview.add_controller(&this.get_drag_handler());
+        this.textview.add_controller(&this.get_drop_handler());
+        this.textview.set_buffer(Some(&this.buffer));
+
+        this.textview.connect_query_tooltip({
+            |t, x, y, keyboard_mode, tooltip| t.tooltip(x, y, keyboard_mode, tooltip)
+        });
+        this.textview.connect_move_cursor({
+            let tags = this.tags.clone();
+            move |textview, _, _, _| tags.move_cursor(textview)
+        });
+
+        this.link_edit.set_accept_link_cb(connect_fwd1!(this.accept_link()));
+
+        this.buffer
+            .connect_local("insert-text", true, connect_fwd1!(this.buffer_do_insert_text()))
+            .unwrap();
+
+        this.buffer.connect_changed({
+            let this2 = this.clone();
+            move |_| {
+                if *this2.is_reapplying.borrow() {
+                    return;
+                }
+                *this2.is_reapplying.borrow_mut() = true;
+                this2.reapply_list_tags();
+                *this2.is_reapplying.borrow_mut() = false;
+            }
+        });
+        this.update_colors(false);
+
+        this
+    }
+
+    fn reapply_list_tags(&self) {
+        let buffer = &self.buffer;
+        let line_count = buffer.line_count();
+        for line in 0..line_count {
+            let line_iter = match buffer.iter_at_line(line) {
+                Some(i) => i,
+                None => continue,
+            };
+            let mut line_end = line_iter.clone();
+            if !line_end.ends_line() {
+                line_end.forward_to_line_end();
+            }
+
+            let line_text = buffer.text(&line_iter, &line_end, false);
+            let (_, item_text) = split_indent(line_text.as_str());
+
+            let is_ul = item_text.starts_with("• ");
+            let is_ol = !is_ul && {
+                let dot_pos = item_text.find(". ");
+                dot_pos
+                    .map(|p| {
+                        let num = &item_text[..p];
+                        !num.is_empty() && num.chars().all(|c| c.is_ascii_digit())
+                    })
+                    .unwrap_or(false)
+            };
+
+            if is_ul || is_ol {
+                // === SAME AS BEFORE (apply) ===
+                let fresh_start = match buffer.iter_at_line(line) {
+                    Some(i) => i,
+                    None => continue,
+                };
+                let mut fresh_end = fresh_start.clone();
+                if !fresh_end.ends_line() {
+                    fresh_end.forward_to_line_end();
+                }
+
+                let line_tag = buffer
+                    .tag_table()
+                    .lookup(if is_ol { Tag::LIST_OL } else { Tag::LIST_UL })
+                    .unwrap();
+                buffer.apply_tag(&line_tag, &fresh_start, &fresh_end);
+
+                let prefix_len =
+                    if is_ul { 2 } else { item_text.find(". ").map(|p| p + 2).unwrap_or(2) };
+
+                let fresh_start2 = match buffer.iter_at_line(line) {
+                    Some(i) => i,
+                    None => continue,
+                };
+                let mut prefix_end = fresh_start2.clone();
+                prefix_end.forward_chars(prefix_len as i32);
+
+                let prefix_tag = buffer
+                    .tag_table()
+                    .lookup(if is_ol { Tag::LIST_OL_PREFIX } else { Tag::LIST_UL_PREFIX })
+                    .unwrap();
+                buffer.apply_tag(&prefix_tag, &fresh_start2, &prefix_end);
+            } else {
+                // === NEW: remove tags only when the line is no longer a list ===
+                for tag_name in
+                    &[Tag::LIST_UL, Tag::LIST_OL, Tag::LIST_UL_PREFIX, Tag::LIST_OL_PREFIX]
+                {
+                    if let Some(tag) = buffer.tag_table().lookup(tag_name) {
+                        buffer.remove_tag(&tag, &line_iter, &line_end);
+                    }
+                }
+            }
+        }
+    }
     fn try_auto_heading(&self) -> bool {
         if !self.is_editable() {
             return false;
@@ -440,77 +595,6 @@ impl TextView {
 
             buffer.apply_image_offset(&cursor, &path, "", pos_start);
         }
-    }
-    pub fn new() -> Self {
-        let ui_src = include_str!("textview.ui");
-        let b = gtk::Builder::new();
-        b.add_from_string(ui_src).expect("Couldn't add from string");
-
-        let tags = Rc::new(TextTagManager::new());
-        let buffer = gtk::TextBuffer::new(Some(tags.table()));
-
-        let textview: gtk::TextView = builder_get!(b("textview"));
-        textview.set_top_margin(MARGIN);
-        textview.set_bottom_margin(MARGIN);
-        textview.set_left_margin(MARGIN);
-        textview.set_right_margin(MARGIN);
-        textview.set_wrap_mode(gtk::WrapMode::Word);
-        textview.set_pixels_above_lines(2);
-        textview.set_pixels_below_lines(2);
-        textview.set_pixels_inside_wrap(1);
-        textview.set_has_tooltip(true);
-
-        let link_edit = Rc::new(LinkEdit::new(&b));
-        let search_bar = Rc::new(SearchBar::new(&b, {
-            let t = textview.clone();
-            move || -> gtk::TextView { t.clone() }
-        }));
-
-        let b: gtk::Box = builder_get!(b("container"));
-        let top_level = b.upcast::<gtk::Widget>();
-
-        let activate_link_cb: OpenLinkCb = Rc::new(RefCell::new(Box::new(|_: &str| {})));
-
-        let link_start = buffer.create_mark(None, &buffer.start_iter(), true);
-        let link_end = buffer.create_mark(None, &buffer.start_iter(), false);
-
-        let this = Self {
-            buffer,
-            tags,
-            textview,
-            link_edit,
-            search_bar,
-            top_level,
-            activate_link_cb,
-            is_editable: Rc::new(RefCell::from(true)),
-            link_start,
-            link_end,
-            colors: Rc::new(RefCell::new(Colors::new())),
-        };
-        this.top_level.add_controller(&this.get_key_press_handler_background());
-        this.textview.add_controller(&this.get_key_press_handler());
-        this.textview.add_controller(&this.get_mouse_release_handler());
-        this.textview.add_controller(&this.get_drag_handler());
-        this.textview.add_controller(&this.get_drop_handler());
-        this.textview.set_buffer(Some(&this.buffer));
-
-        this.textview.connect_query_tooltip({
-            |t, x, y, keyboard_mode, tooltip| t.tooltip(x, y, keyboard_mode, tooltip)
-        });
-        this.textview.connect_move_cursor({
-            let tags = this.tags.clone();
-            move |textview, _, _, _| tags.move_cursor(textview)
-        });
-
-        this.link_edit.set_accept_link_cb(connect_fwd1!(this.accept_link()));
-
-        this.buffer
-            .connect_local("insert-text", true, connect_fwd1!(this.buffer_do_insert_text()))
-            .unwrap();
-
-        this.update_colors(false);
-
-        this
     }
 
     pub fn get_widget(&self) -> &gtk::Widget {
