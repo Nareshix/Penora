@@ -122,9 +122,12 @@ impl TextTagTable {
         let _tag_rule = TextTagTable::create_tag(Tag::RULE, &table);
         // margin tag - applied to whole line
         let tag_list_ul = TextTagTable::create_tag(Tag::LIST_UL, &table);
-        tag_list_ul.set_left_margin(32); // was 16
+        tag_list_ul.set_left_margin(32);
+        tag_list_ul.set_weight(gtk::pango::ffi::PANGO_WEIGHT_BOLD);
+
         let tag_list_ol = TextTagTable::create_tag(Tag::LIST_OL, &table);
         tag_list_ol.set_left_margin(32);
+        tag_list_ol.set_weight(gtk::pango::ffi::PANGO_WEIGHT_BOLD);
 
         // color tag - applied to prefix chars only
         let tag_list_ul_prefix = TextTagTable::create_tag(Tag::LIST_UL_PREFIX, &table);
