@@ -15,10 +15,11 @@ jobs:
       - uses: actions/checkout@v4
       - run: sudo apt-get install -y libgtk-4-dev
       - run: cargo build --release
+      - run: mv target/release/Polora target/release/Polora-linux
       - uses: actions/upload-artifact@v4
         with:
-          name: marko-linux
-          path: target/release/Polora
+          name: polora-linux
+          path: target/release/Polora-linux
 
   build-mac:
     runs-on: macos-latest
@@ -26,10 +27,11 @@ jobs:
       - uses: actions/checkout@v4
       - run: brew install gtk4
       - run: cargo build --release --no-default-features
+      - run: mv target/release/Polora target/release/Polora-mac
       - uses: actions/upload-artifact@v4
         with:
-          name: marko-mac
-          path: target/release/Polora
+          name: polora-mac
+          path: target/release/Polora-mac
 
   build-windows:
     runs-on: windows-latest
@@ -46,7 +48,7 @@ jobs:
         run: cargo build --release --no-default-features
       - uses: actions/upload-artifact@v4
         with:
-          name: marko-windows
+          name: polora-windows
           path: target/release/Polora.exe
 
   publish:
@@ -59,6 +61,6 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/marko-linux/Polora
-            artifacts/marko-mac/Polora
-            artifacts/marko-windows/Polora.exe
+            artifacts/polora-linux/Polora-linux
+            artifacts/polora-mac/Polora-mac
+            artifacts/polora-windows/Polora.exe
