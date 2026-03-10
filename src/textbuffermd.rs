@@ -190,6 +190,15 @@ impl TextBufferMd for gtk::TextBuffer {
             if handle_link {
                 s += "[";
             }
+            if c == '\u{FFFC}' {
+                if !has_image {
+                    s += "---";
+                }
+                // Image anchor: skip the char, the ![ and ](path) tags handle it
+                it.forward_char();
+                c = it.char();
+                continue;
+            }
 
             // newlines in regular lines the editor become paragraphs in markdown
             if c == NEWLINE_CHAR && !in_code_block {
@@ -322,6 +331,12 @@ impl TextBufferMd for gtk::TextBuffer {
                         }
                     }
                     CTag::Image(_, image, title) => {
+                        // If no alt text was inserted (empty alt), insert a placeholder so the
+                        // image tag has non-zero length. restore_anchors() uses toggled_tags(true)
+                        // which never fires on a zero-length tag — causing images to vanish on reload.
+                        if iter.offset() == pos_image {
+                            self.insert(iter, " ");
+                        }
                         self.apply_image_offset(iter, image.as_ref(), title.as_ref(), pos_image)
                     }
                     CTag::Link(_, link, title) => {

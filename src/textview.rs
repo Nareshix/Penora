@@ -395,9 +395,9 @@ pub enum AnchorKind {
 }
 
 #[derive(Clone)]
-struct AnchorEntry {
-    anchor: gtk::TextChildAnchor,
-    kind: AnchorKind,
+pub(crate) struct AnchorEntry {
+    pub(crate) anchor: gtk::TextChildAnchor,
+    pub(crate) kind: AnchorKind,
     last_offset: i32,
 }
 
@@ -517,10 +517,77 @@ impl TextView {
 
         this
     }
+
     fn restore_anchors(&self) {
         let buffer = &self.buffer;
 
-        // first handle RULE-tagged text from markdown load
+        let mut offset = 0;
+        loop {
+            let iter = buffer.iter_at_offset(offset);
+            if iter.offset() >= buffer.end_iter().offset() {
+                break;
+            }
+
+            let mut found_image: Option<(gtk::TextTag, String)> = None;
+            for tag in iter.toggled_tags(true) {
+                if let Some(path) = tag.get_image() {
+                    found_image = Some((tag.clone(), path));
+                    break;
+                }
+            }
+
+            if let Some((tag, path)) = found_image {
+                let mut end = iter.clone();
+                end.forward_to_tag_toggle(Some(&tag));
+
+                let mut start = iter.clone();
+                buffer.begin_irreversible_action();
+                buffer.delete(&mut start, &mut end);
+
+                let mut pos = buffer.iter_at_offset(start.offset());
+                let anchor = buffer.create_child_anchor(&mut pos);
+
+                // Try cache first, then load from disk
+                let texture_opt = {
+                    let store = self.image_widgets.borrow();
+                    store.get(&path).map(|(t, w, h)| (t.clone(), *w, *h))
+                };
+                let loaded = texture_opt.or_else(|| {
+                    let file = gtk::gio::File::for_path(&path);
+                    let tex = gdk::Texture::from_file(&file).ok()?;
+                    let aspect = tex.height() as f64 / tex.width() as f64;
+                    let w = 1000i32;
+                    let h = (w as f64 * aspect) as i32;
+                    self.image_widgets.borrow_mut().insert(path.clone(), (tex.clone(), w, h));
+                    Some((tex, w, h))
+                });
+                if let Some((texture, w, h)) = loaded {
+                    let widget = self.create_resizable_image(&texture, &path, w, h);
+                    self.textview.add_child_at_anchor(&widget, &anchor);
+
+                    // Re-apply image tag over the new anchor char
+                    let anchor_start = pos.offset() - 1;
+                    buffer.apply_image_offset(&pos, &path, "", anchor_start);
+
+                    self.anchor_registry.borrow_mut().push(AnchorEntry {
+                        anchor,
+                        kind: AnchorKind::Image(path),
+                        last_offset: pos.offset(),
+                    });
+
+                    offset = pos.offset();
+                } else {
+                    buffer.end_irreversible_action();
+                    offset += 1;
+                    continue;
+                }
+
+                buffer.end_irreversible_action();
+            } else {
+                offset += 1;
+            }
+        }
+
         if let Some(rule_tag) = buffer.tag_table().lookup(Tag::RULE) {
             let mut iter = buffer.start_iter();
             loop {
@@ -548,7 +615,6 @@ impl TextView {
             }
         }
 
-        // collect orphaned anchor positions (widget is gone, char remains)
         let mut orphan_offsets: Vec<i32> = Vec::new();
         let mut iter = buffer.start_iter();
         loop {
@@ -564,15 +630,12 @@ impl TextView {
             return;
         }
 
-        // match orphans to registry entries by original insertion order
-        // registry entries whose anchors are deleted become orphans in order
         let registry = self.anchor_registry.borrow();
         let mut orphaned_entries: Vec<AnchorEntry> =
             registry.iter().filter(|e| e.anchor.is_deleted()).cloned().collect();
-        orphaned_entries.sort_by_key(|e| e.last_offset); // ADD THIS
+        orphaned_entries.sort_by_key(|e| e.last_offset);
         drop(registry);
 
-        // pair each orphan offset with its registry entry by index
         for (i, &offset) in orphan_offsets.iter().enumerate() {
             let entry = match orphaned_entries.get(i) {
                 Some(e) => e.clone(),
@@ -607,7 +670,6 @@ impl TextView {
 
             self.textview.add_child_at_anchor(&widget, &new_anchor);
 
-            // update registry with new anchor
             let mut registry = self.anchor_registry.borrow_mut();
             if let Some(reg_entry) = registry.iter_mut().find(|e| {
                 matches!(&e.kind, AnchorKind::Image(p)
