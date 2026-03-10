@@ -1023,15 +1023,9 @@ impl TextView {
         let path_str = path.to_string_lossy().to_string();
 
         if texture.save_to_png(&path_str) {
-            let view_w = self.textview.allocated_width() - (MARGIN * 2);
-            let natural_w = texture.width();
-            let natural_h = texture.height();
-            let (initial_w, initial_h) = if natural_w > view_w {
-                let scale = view_w as f64 / natural_w as f64;
-                (view_w, (natural_h as f64 * scale) as i32)
-            } else {
-                (natural_w, natural_h)
-            };
+            let aspect = texture.height() as f64 / texture.width() as f64;
+            let initial_w = 1000i32;
+            let initial_h = (initial_w as f64 * aspect) as i32;
 
             self.image_widgets
                 .borrow_mut()
