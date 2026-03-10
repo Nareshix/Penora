@@ -1,0 +1,46 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get install -y libgtk-4-dev
+      - run: cargo build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: marko-linux
+          path: target/release/marko-editor
+
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install gtk4
+      - run: cargo build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: marko-mac
+          path: target/release/marko-editor
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          install: >-
+            mingw-w64-ucrt-x86_64-gtk4
+            mingw-w64-ucrt-x86_64-rust
+      - shell: msys2 {0}
+        run: cargo build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: marko-windows
+          path: target/release/marko-editor.exe
