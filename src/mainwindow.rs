@@ -1,10 +1,10 @@
 #[cfg(feature = "default")]
 extern crate x11;
 use chrono;
+use gtk::EventControllerKey;
 use gtk::gio::SimpleAction;
 use gtk::glib;
 use gtk::prelude::*;
-use gtk::EventControllerKey;
 
 use crate::data::Data;
 use crate::res::APP_NAME;
@@ -379,21 +379,31 @@ impl MainWindow {
 
         let p = self.file.borrow().clone();
         if let Some(filename) = p {
+            // file passed via CLI — open it
             self.open_file(&filename);
         } else {
-            self.act_open_startpage();
-        }
-
-        // Restore last open folder
-        if let Some(folder) = self.settings.get("config", "open_folder") {
-            if !folder.is_empty() {
-                self.open_folder(&PathBuf::from(folder));
+            // try last opened file, fall back to startpage
+            let last = self
+                .settings
+                .get("config", "last_file")
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from)
+                .filter(|p| p.exists());
+            if let Some(path) = last {
+                self.open_file(&path);
+            } else {
+                self.act_open_startpage();
             }
         }
 
+        // Restore last open folder
+        if let Some(folder) = self.settings.get("config", "open_folder")
+            && !folder.is_empty() {
+                self.open_folder(&PathBuf::from(folder));
+            }
+
         self.restore_geometry();
     }
-
     pub fn enqueue_file(&self, filename: PathBuf) {
         self.set_filename(&filename);
     }
@@ -562,6 +572,7 @@ impl MainWindow {
     fn set_filename(&self, filename: &Path) {
         self.file.replace(Some(filename.to_path_buf()));
         self.set_title();
+        let _ = self.settings.store("config", "last_file", filename.to_str().unwrap_or("")); // ADD THIS
     }
 
     fn clear_file(&self) {
@@ -648,7 +659,7 @@ impl MainWindow {
     }
 
     fn close(&self) {
-        self.save_silent(); 
+        self.save_silent();
         self.close_file(Rc::new(|s: &MainWindow| s.ui.window.application().unwrap().quit()));
     }
 
