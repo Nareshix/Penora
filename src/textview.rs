@@ -862,9 +862,15 @@ impl TextView {
         let path_str = path.to_string_lossy().to_string();
 
         if texture.save_to_png(&path_str) {
-            let aspect = texture.height() as f64 / texture.width() as f64;
-            let initial_w = 300i32;
-            let initial_h = (initial_w as f64 * aspect) as i32;
+            let max_w = 600i32;
+            let natural_w = texture.width();
+            let natural_h = texture.height();
+            let (initial_w, initial_h) = if natural_w > max_w {
+                let scale = max_w as f64 / natural_w as f64;
+                (max_w, (natural_h as f64 * scale) as i32)
+            } else {
+                (natural_w, natural_h)
+            };
 
             self.image_widgets
                 .borrow_mut()
@@ -880,10 +886,8 @@ impl TextView {
             }
 
             let pos_start = cursor.offset();
-
             let anchor = buffer.create_child_anchor(&mut cursor);
 
-            // store anchor reference for undo restore
             self.image_anchors.borrow_mut().push((anchor.clone(), path_str.clone()));
 
             let image_widget =
@@ -909,13 +913,10 @@ impl TextView {
         initial_width: i32,
         initial_height: i32,
     ) -> gtk::Widget {
-        let image_widgets = self.image_widgets.clone();
-        let path_owned = path.to_string();
-
         let picture = gtk::Picture::for_paintable(Some(texture));
         picture.set_size_request(initial_width, initial_height);
         picture.set_can_shrink(true);
-        picture.set_keep_aspect_ratio(false);
+        picture.set_keep_aspect_ratio(true);
         picture.set_hexpand(false);
         picture.set_vexpand(false);
         picture.set_halign(gtk::Align::Start);
@@ -923,239 +924,6 @@ impl TextView {
         picture.set_can_focus(false);
         picture.set_focusable(false);
 
-        let overlay = gtk::Overlay::new();
-        overlay.set_child(Some(&picture));
-        overlay.set_size_request(initial_width, initial_height);
-        overlay.set_hexpand(false);
-        overlay.set_vexpand(false);
-        overlay.set_halign(gtk::Align::Start);
-        overlay.set_valign(gtk::Align::Start);
-        overlay.set_cursor_from_name(Some("default"));
-        overlay.set_can_focus(false);
-        overlay.set_focusable(false);
-
-        // current committed size
-        let current_w = Rc::new(Cell::new(initial_width));
-        let current_h = Rc::new(Cell::new(initial_height));
-        // snapshot at drag start
-        let snap_w = Rc::new(Cell::new(initial_width));
-        let snap_h = Rc::new(Cell::new(initial_height));
-
-        let make_handle =
-            |width: i32, height: i32, halign: gtk::Align, valign: gtk::Align, cursor_name: &str| {
-                let handle = gtk::DrawingArea::new();
-                handle.set_size_request(width, height);
-                handle.set_halign(halign);
-                handle.set_valign(valign);
-                handle.set_hexpand(false);
-                handle.set_vexpand(false);
-                handle.set_cursor_from_name(Some(cursor_name));
-                handle.set_opacity(0.0);
-                handle.set_can_focus(false);
-                handle.set_focusable(false);
-
-                let motion = gtk::EventControllerMotion::new();
-                let handle_ref = handle.clone();
-                motion.connect_enter(move |_, _, _| {
-                    handle_ref.set_opacity(1.0);
-                });
-                let handle_ref = handle.clone();
-                motion.connect_leave(move |_| {
-                    handle_ref.set_opacity(0.0);
-                });
-                handle.add_controller(&motion);
-                handle
-            };
-
-        // diagonal handle (bottom-right)
-        let handle = make_handle(20, 20, gtk::Align::End, gtk::Align::End, "se-resize");
-        handle.set_draw_func(|_, cr, w, h| {
-            cr.set_source_rgba(0.9, 0.9, 0.9, 0.9);
-            cr.move_to(w as f64, 0.0);
-            cr.line_to(w as f64, h as f64);
-            cr.line_to(0.0, h as f64);
-            cr.fill().ok();
-        });
-        overlay.add_overlay(&handle);
-
-        let drag = gtk::GestureDrag::new();
-        drag.connect_drag_begin({
-            let current_w = current_w.clone();
-            let current_h = current_h.clone();
-            let snap_w = snap_w.clone();
-            let snap_h = snap_h.clone();
-            let handle = handle.clone();
-            move |_, _x, _y| {
-                snap_w.set(current_w.get());
-                snap_h.set(current_h.get());
-                handle.set_opacity(1.0);
-            }
-        });
-        drag.connect_drag_update({
-            let snap_w = snap_w.clone();
-            let snap_h = snap_h.clone();
-            let overlay = overlay.clone();
-            let picture = picture.clone();
-            move |_, offset_x, offset_y| {
-                let new_w = (snap_w.get() as f64 + offset_x).max(50.0) as i32;
-                let new_h = (snap_h.get() as f64 + offset_y).max(50.0) as i32;
-                overlay.set_size_request(new_w, new_h);
-                picture.set_size_request(new_w, new_h);
-                overlay.queue_resize();
-            }
-        });
-        drag.connect_drag_end({
-            let current_w = current_w.clone();
-            let current_h = current_h.clone();
-            let snap_w = snap_w.clone();
-            let snap_h = snap_h.clone();
-            let overlay = overlay.clone();
-            let handle = handle.clone();
-            let image_widgets = image_widgets.clone();
-            let path_owned = path_owned.clone();
-            move |_, offset_x, offset_y| {
-                let new_w = (snap_w.get() as f64 + offset_x).max(50.0) as i32;
-                let new_h = (snap_h.get() as f64 + offset_y).max(50.0) as i32;
-                current_w.set(new_w);
-                current_h.set(new_h);
-                overlay.set_size_request(new_w, new_h);
-                handle.set_opacity(0.0);
-                // persist size so undo restore uses latest size
-                if let Some(entry) = image_widgets.borrow_mut().get_mut(&path_owned) {
-                    entry.1 = new_w;
-                    entry.2 = new_h;
-                }
-            }
-        });
-        handle.add_controller(&drag);
-
-        // right handle (horizontal only)
-        let handle_right = make_handle(8, 40, gtk::Align::End, gtk::Align::Center, "e-resize");
-        handle_right.set_draw_func(|_, cr, w, h| {
-            cr.set_source_rgba(0.9, 0.9, 0.9, 0.9);
-            cr.rectangle(0.0, 0.0, w as f64, h as f64);
-            cr.fill().ok();
-        });
-        overlay.add_overlay(&handle_right);
-
-        let drag_right = gtk::GestureDrag::new();
-        drag_right.connect_drag_begin({
-            let current_w = current_w.clone();
-            let snap_w = snap_w.clone();
-            let handle_right = handle_right.clone();
-            move |_, _, _| {
-                snap_w.set(current_w.get());
-                handle_right.set_opacity(1.0);
-            }
-        });
-        drag_right.connect_drag_update({
-            let snap_w = snap_w.clone();
-            let current_h = current_h.clone();
-            let overlay = overlay.clone();
-            let picture = picture.clone();
-            move |_, offset_x, _| {
-                let new_w = (snap_w.get() as f64 + offset_x).max(50.0) as i32;
-                let h = current_h.get();
-                overlay.set_size_request(new_w, h);
-                picture.set_size_request(new_w, h);
-                overlay.queue_resize();
-            }
-        });
-        drag_right.connect_drag_end({
-            let current_w = current_w.clone();
-            let snap_w = snap_w.clone();
-            let handle_right = handle_right.clone();
-            let image_widgets = image_widgets.clone();
-            let path_owned = path_owned.clone();
-            let current_h = current_h.clone();
-            move |_, offset_x, _| {
-                let new_w = (snap_w.get() as f64 + offset_x).max(50.0) as i32;
-                current_w.set(new_w);
-                handle_right.set_opacity(0.0);
-                if let Some(entry) = image_widgets.borrow_mut().get_mut(&path_owned) {
-                    entry.1 = new_w;
-                    entry.2 = current_h.get();
-                }
-            }
-        });
-        handle_right.add_controller(&drag_right);
-
-        // bottom handle (vertical only)
-        let handle_bottom = make_handle(40, 8, gtk::Align::Center, gtk::Align::End, "s-resize");
-        handle_bottom.set_draw_func(|_, cr, w, h| {
-            cr.set_source_rgba(0.9, 0.9, 0.9, 0.9);
-            cr.rectangle(0.0, 0.0, w as f64, h as f64);
-            cr.fill().ok();
-        });
-        overlay.add_overlay(&handle_bottom);
-
-        let drag_bottom = gtk::GestureDrag::new();
-        drag_bottom.connect_drag_begin({
-            let current_h = current_h.clone();
-            let snap_h = snap_h.clone();
-            let handle_bottom = handle_bottom.clone();
-            move |_, _, _| {
-                snap_h.set(current_h.get());
-                handle_bottom.set_opacity(1.0);
-            }
-        });
-        drag_bottom.connect_drag_update({
-            let snap_h = snap_h.clone();
-            let current_w = current_w.clone();
-            let overlay = overlay.clone();
-            let picture = picture.clone();
-            move |_, _, offset_y| {
-                let w = current_w.get();
-                let new_h = (snap_h.get() as f64 + offset_y).max(50.0) as i32;
-                overlay.set_size_request(w, new_h);
-                picture.set_size_request(w, new_h);
-                overlay.queue_resize();
-            }
-        });
-        drag_bottom.connect_drag_end({
-            let current_h = current_h.clone();
-            let snap_h = snap_h.clone();
-            let handle_bottom = handle_bottom.clone();
-            let image_widgets = image_widgets.clone();
-            let path_owned = path_owned.clone();
-            let current_w = current_w.clone();
-            move |_, _, offset_y| {
-                let new_h = (snap_h.get() as f64 + offset_y).max(50.0) as i32;
-                current_h.set(new_h);
-                handle_bottom.set_opacity(0.0);
-                if let Some(entry) = image_widgets.borrow_mut().get_mut(&path_owned) {
-                    entry.1 = current_w.get();
-                    entry.2 = new_h;
-                }
-            }
-        });
-        handle_bottom.add_controller(&drag_bottom);
-
-        // show all handles on image hover
-        let motion_overlay = gtk::EventControllerMotion::new();
-        {
-            let handle = handle.clone();
-            let handle_right = handle_right.clone();
-            let handle_bottom = handle_bottom.clone();
-            motion_overlay.connect_enter(move |_, _, _| {
-                handle.set_opacity(1.0);
-                handle_right.set_opacity(1.0);
-                handle_bottom.set_opacity(1.0);
-            });
-        }
-        {
-            let handle = handle.clone();
-            let handle_right = handle_right.clone();
-            let handle_bottom = handle_bottom.clone();
-            motion_overlay.connect_leave(move |_| {
-                handle.set_opacity(0.0);
-                handle_right.set_opacity(0.0);
-                handle_bottom.set_opacity(0.0);
-            });
-        }
-        overlay.add_controller(&motion_overlay);
-
-        // wrap in box - spacing adds padding around image
         let container = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         container.set_hexpand(false);
         container.set_vexpand(false);
@@ -1166,7 +934,7 @@ impl TextView {
         container.set_margin_top(6);
         container.set_margin_bottom(6);
         container.set_margin_start(4);
-        container.append(&overlay);
+        container.append(&picture);
 
         container.upcast::<gtk::Widget>()
     }
