@@ -52,13 +52,6 @@ impl TextBufferMd for gtk::TextBuffer {
     }
 
     fn to_markdown(&self) -> String {
-        // add newline at end if needed
-        let mut end = self.end_iter();
-        let mut start = end.clone();
-        if start.backward_char() && self.text(&start, &end, false).ne(NEWLINE) {
-            self.insert(&mut end, NEWLINE);
-        }
-
         // resulting string
         let mut s = String::new();
 
@@ -141,8 +134,6 @@ impl TextBufferMd for gtk::TextBuffer {
                                 open.remove(index);
                             } else {
                                 // the candidate was top, which is already removed from open
-                                // ToDo: this assert fails for "{++{==Hallo **Welt!**==}++}\n"
-                                //assert_eq!(name, top_name);
                             }
                         } else {
                             // it should be ok, to not write out the remaining open tags here
@@ -266,7 +257,6 @@ impl TextBufferMd for gtk::TextBuffer {
 
         s
     }
-
     fn insert_markdown(&self, iter: &mut gtk::TextIter, markdown: &str) {
         let pos_start = iter.offset();
 
@@ -611,7 +601,6 @@ mod tests {
             "* **Hallo Welt**\n\n* **Hallo zwei**\n\n    * **Hallo drei**\n\n    * 5 \\* 4 = 20\n\n    * **5 \\* 4 = 20**\n",
             "```\n* foo\n    * **bar**\n* _baz_\n```\n",
             "```\n* first\n* second\n\n<br/>\n\n    * inner first\n\n    * inner **second**\n* third\n```\n",
-
         ];
 
         for s in strings {
@@ -624,24 +613,29 @@ mod tests {
     fn test_markdown_turnaround() {
         let buffer = buffer_new();
 
-        let pairs = vec![(
-                             "* first\n* second\n    * inner first\n    * inner second\n        * second inner first\n        * second inner second\n* third\n* fourth\n",
-                             "* first\n\n* second\n\n    * inner first\n\n    * inner second\n\n        * second inner first\n\n        * second inner second\n\n* third\n\n* fourth\n"
-                         ),
-                         ("My text\n\nAnother paragraph...", "My text\n\nAnother paragraph...\n"),
-                         ("[Marko Editor](http://www.marko-editor.com)","[Marko Editor](http://www.marko-editor.com)\n",),
-                         ("**Hello _World_**_again_\n","**Hello *World****again*\n"),
-                         ("**Hello _World_** _again_\n","**Hello *World*** *again*\n"),
-                         ("**_text_**\n","***text***\n"),
-                         ("_**text**_\n","***text***\n"),
-                         ("*ABC**Hello***** World** *again*\n","*ABC**Hello***\\*\\* World\\*\\* *again*\n"),
-                         // ToDo: these results are broken and need to be changed
-                         // ToDo: mixed formatting in links
-                         ("[**Marko** {++Editor++} *Website*](http://www.marko-editor.com)\n", "**[Marko** {++Editor++} *Website](http://www.marko-editor.com)*\n"),
-                         // ToDo: critics markup in code blocks
-                         ("```\nHallo {++Welt++}\n```\n", "```\nHallo Welt\n```\n"),
-
-
+        let pairs = vec![
+            (
+                "* first\n* second\n    * inner first\n    * inner second\n        * second inner first\n        * second inner second\n* third\n* fourth\n",
+                "* first\n\n* second\n\n    * inner first\n\n    * inner second\n\n        * second inner first\n\n        * second inner second\n\n* third\n\n* fourth\n",
+            ),
+            ("My text\n\nAnother paragraph...", "My text\n\nAnother paragraph...\n"),
+            (
+                "[Marko Editor](http://www.marko-editor.com)",
+                "[Marko Editor](http://www.marko-editor.com)\n",
+            ),
+            ("**Hello _World_**_again_\n", "**Hello *World****again*\n"),
+            ("**Hello _World_** _again_\n", "**Hello *World*** *again*\n"),
+            ("**_text_**\n", "***text***\n"),
+            ("_**text**_\n", "***text***\n"),
+            ("*ABC**Hello***** World** *again*\n", "*ABC**Hello***\\*\\* World\\*\\* *again*\n"),
+            // ToDo: these results are broken and need to be changed
+            // ToDo: mixed formatting in links
+            (
+                "[**Marko** {++Editor++} *Website*](http://www.marko-editor.com)\n",
+                "**[Marko** {++Editor++} *Website](http://www.marko-editor.com)*\n",
+            ),
+            // ToDo: critics markup in code blocks
+            ("```\nHallo {++Welt++}\n```\n", "```\nHallo Welt\n```\n"),
         ];
 
         for (input, output) in pairs {
