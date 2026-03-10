@@ -44,12 +44,36 @@ jobs:
             mingw-w64-ucrt-x86_64-gtk4
             mingw-w64-ucrt-x86_64-rust
             mingw-w64-ucrt-x86_64-pkgconf
+
       - shell: msys2 {0}
         run: cargo build --release --no-default-features
+
+      - shell: msys2 {0}
+        run: |
+          mkdir -p release-win
+          cp target/release/Polora.exe release-win/
+
+          ldd target/release/Polora.exe \
+            | grep -i ucrt64 \
+            | awk '{print $3}' \
+            | xargs -I{} cp {} release-win/
+
+          mkdir -p release-win/share
+          cp -r /ucrt64/share/glib-2.0      release-win/share/
+          cp -r /ucrt64/share/icons         release-win/share/
+          cp -r /ucrt64/lib/gdk-pixbuf-2.0  release-win/
+
+          mkdir -p release-win/share/glib-2.0/schemas
+          cp /ucrt64/share/glib-2.0/schemas/*.xml release-win/share/glib-2.0/schemas/ || true
+          glib-compile-schemas release-win/share/glib-2.0/schemas/
+
+      - shell: pwsh
+        run: Compress-Archive -Path release-win\* -DestinationPath Polora-windows.zip
+
       - uses: actions/upload-artifact@v4
         with:
           name: polora-windows
-          path: target/release/Polora.exe
+          path: Polora-windows.zip
 
   publish:
     needs: [build-linux, build-mac, build-windows]
@@ -63,4 +87,4 @@ jobs:
           files: |
             artifacts/polora-linux/Polora-linux
             artifacts/polora-mac/Polora-mac
-            artifacts/polora-windows/Polora.exe
+            artifacts/polora-windows/Polora-windows.zip
