@@ -15,11 +15,11 @@ jobs:
       - uses: actions/checkout@v4
       - run: sudo apt-get install -y libgtk-4-dev
       - run: cargo build --release
-      - run: mv target/release/Polora target/release/Polora-linux
+      - run: mv target/release/Penora target/release/Penora-linux
       - uses: actions/upload-artifact@v4
         with:
-          name: polora-linux
-          path: target/release/Polora-linux
+          name: penora-linux
+          path: target/release/Penora-linux
 
   build-mac:
     runs-on: macos-latest
@@ -27,11 +27,11 @@ jobs:
       - uses: actions/checkout@v4
       - run: brew install gtk4
       - run: cargo build --release --no-default-features
-      - run: mv target/release/Polora target/release/Polora-mac
+      - run: mv target/release/Penora target/release/Penora-mac
       - uses: actions/upload-artifact@v4
         with:
-          name: polora-mac
-          path: target/release/Polora-mac
+          name: penora-mac
+          path: target/release/Penora-mac
 
   build-windows:
     runs-on: windows-latest
@@ -52,9 +52,9 @@ jobs:
       - shell: msys2 {0}
         run: |
           mkdir -p release-win
-          cp target/release/Polora.exe release-win/
+          cp target/release/Penora.exe release-win/
 
-          ldd target/release/Polora.exe \
+          ldd target/release/Penora.exe \
             | grep -i ucrt64 \
             | awk '{print $3}' \
             | xargs -I{} cp {} release-win/
@@ -70,15 +70,15 @@ jobs:
           cp /ucrt64/share/glib-2.0/schemas/*.xml release-win/share/glib-2.0/schemas/ || true
           glib-compile-schemas release-win/share/glib-2.0/schemas/
 
-          printf '@echo off\r\nset GSK_RENDERER=ngl\r\nstart "" "%%~dp0Polora.exe"\r\n' > release-win/Polora-launch.bat
+          printf '@echo off\r\nset GSK_RENDERER=ngl\r\nstart "" "%%~dp0Penora.exe"\r\n' > release-win/Penora-launch.bat
 
       - shell: pwsh
-        run: Compress-Archive -Path release-win\* -DestinationPath Polora-windows.zip
+        run: Compress-Archive -Path release-win\* -DestinationPath Penora-windows.zip
 
       - uses: actions/upload-artifact@v4
         with:
-          name: polora-windows
-          path: Polora-windows.zip
+          name: penora-windows
+          path: Penora-windows.zip
 
   publish:
     needs: [build-linux, build-mac, build-windows]
@@ -90,6 +90,6 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/polora-linux/Polora-linux
-            artifacts/polora-mac/Polora-mac
-            artifacts/polora-windows/Polora-windows.zip
+            artifacts/penora-linux/Penora-linux
+            artifacts/penora-mac/Penora-mac
+            artifacts/penora-windows/Penora-windows.zip
