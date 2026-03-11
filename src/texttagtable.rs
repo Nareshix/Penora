@@ -116,11 +116,9 @@ impl TextTagTable {
 
         let tag_list_ul = TextTagTable::create_tag(Tag::LIST_UL, &table);
         tag_list_ul.set_left_margin(32);
-        tag_list_ul.set_weight(gtk::pango::ffi::PANGO_WEIGHT_BOLD);
 
         let tag_list_ol = TextTagTable::create_tag(Tag::LIST_OL, &table);
         tag_list_ol.set_left_margin(32);
-        tag_list_ol.set_weight(gtk::pango::ffi::PANGO_WEIGHT_BOLD);
 
         let tag_list_ul_prefix = TextTagTable::create_tag(Tag::LIST_UL_PREFIX, &table);
         let muted = gdk::RGBA::new(0.5f32, 0.5f32, 0.5f32, 1.0f32);

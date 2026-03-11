@@ -1071,8 +1071,10 @@ impl TextView {
         let mut tag_start = tag_end.clone();
         tag_start.backward_char();
         let mut tline_end = tag_start.clone();
-        tline_end.forward_line();
+        tline_end.forward_to_line_end(); // fix 1: was forward_line()
         buffer.apply_tag(&tag, &tag_start, &tline_end);
+        buffer.place_cursor(&tag_start); // fix 2: missing entirely
+
         buffer.end_user_action();
         true
     }
@@ -1439,19 +1441,40 @@ impl TextView {
         start.backward_chars(count);
         self.tags.for_each_edit_tag(|tag: &gtk::TextTag| buffer.apply_tag(tag, iter, &start));
 
+        if _text.contains('\n') {
+            return None;
+        }
+
         let mut line_start = iter.clone();
         line_start.set_line_offset(0);
-        for tag in line_start.tags() {
-            let name = tag.get_name();
-            if matches!(name.as_str(), "h1" | "h2" | "h3" | "h4" | "h5" | "h6") {
-                buffer.apply_tag(&tag, &start, iter);
-                break;
+
+        // First check: are we inside a heading line?
+        let heading_tag = line_start
+            .tags()
+            .into_iter()
+            .find(|tag| {
+                matches!(tag.get_name().as_str(), "h1" | "h2" | "h3" | "h4" | "h5" | "h6")
+                // Fallback: first char typed pushes the tag rightward, so check if it toggles on at iter
+            })
+            .or_else(|| {
+                iter.toggled_tags(true).into_iter().find(|tag| {
+                    matches!(tag.get_name().as_str(), "h1" | "h2" | "h3" | "h4" | "h5" | "h6")
+                })
+            });
+
+        if let Some(tag) = heading_tag {
+            buffer.apply_tag(&tag, &start, iter);
+        } else {
+            // Strip any heading tag GTK bled onto a non-heading line
+            for tag in start.tags() {
+                if matches!(tag.get_name().as_str(), "h1" | "h2" | "h3" | "h4" | "h5" | "h6") {
+                    buffer.remove_tag(&tag, &start, iter);
+                }
             }
         }
 
         None
     }
-
     fn copy_anchor(&self) -> bool {
         let buffer = &self.buffer;
         if let Some((start, end)) = buffer.selection_bounds() {
@@ -1613,6 +1636,26 @@ impl TextView {
                                 return Propagation::Stop;
                             }
                             this.tags.text_edit(TextEdit::NewLine);
+                            let buffer = this.buffer.clone();
+                            glib::idle_add_local_once(move || {
+                                let cursor = buffer.get_insert_iter();
+                                let mut line_start = cursor.clone();
+                                line_start.set_line_offset(0);
+                                let mut line_end = line_start.clone();
+                                if !line_end.ends_line() {
+                                    line_end.forward_to_line_end();
+                                }
+                                for tag in line_start.tags() {
+                                    let name = tag.get_name();
+                                    if matches!(
+                                        name.as_str(),
+                                        "h1" | "h2" | "h3" | "h4" | "h5" | "h6"
+                                    ) {
+                                        buffer.remove_tag(&tag, &line_start, &line_end);
+                                    }
+                                }
+                            });
+
                             return Propagation::Proceed;
                         }
                         gdk::Key::space => {
