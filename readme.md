@@ -1,4 +1,7 @@
 # Notes
+* cursor movement for Up/Down arrows
+* mouse click → update cursor_para and cursor_offset
+
 ```
 User does something
         ↓
@@ -21,7 +24,7 @@ use set_size_points not set_scale or you get weird line artifacts at tag boundar
 
 undo is two stacks we own completely, GTKs built in undo is disabled.
 
-Document is 
+Document is
 
 ```Document
   └── Vec<Paragraph>
