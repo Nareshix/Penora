@@ -46,6 +46,7 @@ This text will now appear on the right side of the list!
 You can add more lists or paragraphs here.
 ---end-column---
 
+BUT moslt likely would embed a widget besid erhe free space. will break the md convention for sure because its a widget but its something to think about later 
 
 # Penora
 
